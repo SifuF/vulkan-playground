@@ -1,8 +1,8 @@
 #include "vulkan_playground.hpp"
 
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
-#include <cstdlib>
 
 int main() {
 	VulkanPlayground vapp;

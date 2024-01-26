@@ -47,5 +47,4 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
     glfw3.lib
 )
 
-file(COPY ${PROJECT_SOURCE_DIR}/shaders/ DESTINATION ${PROJECT_BINARY_DIR}/shaders/)
 file(COPY ${PROJECT_SOURCE_DIR}/img/ DESTINATION ${PROJECT_BINARY_DIR}/img/)

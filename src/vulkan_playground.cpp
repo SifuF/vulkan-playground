@@ -5,13 +5,18 @@
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
 
-#include <array>
-#include <iostream>
-
 //#define STB_IMAGE_IMPLEMENTATION
 //#include "stb_image.h"
 //#define STB_IMAGE_WRITE_IMPLEMENTATION
 //#include "stb_image_write.h"
+
+struct PushConstants {
+    int width;
+    int height;
+    int vertical;
+    int combined;
+    int kernel[4];
+};
 
 struct Vertex {
     glm::vec2 pos;
@@ -56,34 +61,142 @@ VulkanPlayground::VulkanPlayground() {
 void VulkanPlayground::run() {
     initWindow();
     initVulkan();
+    compute();
     mainLoop();
     cleanup();
 }
 
 void VulkanPlayground::initWindow() {
     glfwInit();
-
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
     window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
 }
 
 void VulkanPlayground::initVulkan() {
+    // Vulkan common
     createInstance();
     setupDebugMessenger();
     createSurface();
     pickPhysicalDevice();
     createLogicalDevice();
+    
+    // Render
     createSwapChain();
     createImageViews();
     createRenderPass();
     createGraphicsPipeline();
     createFramebuffers();
-    createCommandPool();
+    createGraphicsCommandPoolAndBuffer();
     createVertexBuffer();
-    createCommandBuffer();
     createSyncObjects();
+
+    // Compute
+    createComputeBindingsAndPipelineLayout();
+    createComputePipeline();
+    allocateComputeDescriptorSets();
+    createComputeCommandPoolAndBuffer();
+}
+
+void VulkanPlayground::compute() {
+
+    const int kernelNearest[] = { 0, 16384, 0, 0 };
+    const int kernelLinear[] = { 0, 12288, 4096, 0 };
+    const int kernelCubic[] = { -1382, 14285, 3942, -461 };
+    const int kernelModifiedCubic[] = { -2360, 15855, 4165, -1276 };
+
+    const int width = 10;
+    const int height = 10;
+    const uint32_t elementsPerBuffer = width * height;
+    int* inPlane = new int[elementsPerBuffer];
+    for (int i = 0; i < elementsPerBuffer; ++i) {
+        inPlane[i] = rand() % 255;
+    }
+    int* outPlane = new int[elementsPerBuffer];
+
+    createComputeBuffers(elementsPerBuffer);
+    bindComputeDescriptorSets();
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    auto printBuffer = [](int* data, int w, int h, const char* str) {
+        if (w * h > 5000)
+            return;
+
+        std::stringstream output;
+        output << str << '\n';
+        for (uint32_t i = 0; i < w * h; i++) {
+            if (!(i % w) && (i != 0)) {
+                output << '\n';
+            }
+            output << data[i] << " ";
+        }
+        output << "\n";
+
+        std::cout << output.str() << std::endl;
+    };
+
+    PushConstants constants{};
+    constants.width = width;
+    constants.height = height;
+    constants.vertical = 1;
+    std::memcpy(constants.kernel, kernelNearest, 4 * sizeof(kernelNearest[0]));
+    constants.combined = 0;
+
+    vkBeginCommandBuffer(computeCommandBuffer, &beginInfo);
+    vkCmdBindPipeline(computeCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+    vkCmdBindDescriptorSets(computeCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeDescriptorSet, 0, nullptr);
+    vkCmdPushConstants(computeCommandBuffer, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), &constants);
+    vkCmdDispatch(computeCommandBuffer, width * height, 1, 1);
+
+    if (vkEndCommandBuffer(computeCommandBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to end command buffer");
+    }
+
+    int* dataSrc = nullptr;
+    if (vkMapMemory(device, computeStagingMemorys[0], 0, VK_WHOLE_SIZE, 0, reinterpret_cast<void**>(&dataSrc)) != VK_SUCCESS) {
+        throw std::runtime_error("failed to map device memory");
+    }
+    std::memcpy(dataSrc, inPlane, width * height * sizeof(int));
+    printBuffer(dataSrc, width, height, "src buffer pre:");
+    vkUnmapMemory(device, computeStagingMemorys[0]);
+
+    copyBuffer(computeStagingBuffers[0], computeBuffers[0], width * height * sizeof(int), computeCommandBufferForTransfer);
+
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &computeCommandBuffer;
+
+    vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(computeQueue);
+
+    copyBuffer(computeBuffers[1], computeStagingBuffers[1], width * height * sizeof(int), computeCommandBufferForTransfer);
+
+    int* dataDst = nullptr;
+    if (vkMapMemory(device, computeStagingMemorys[1], 0, VK_WHOLE_SIZE, 0, reinterpret_cast<void**>(&dataDst)) != VK_SUCCESS) {
+        throw std::runtime_error("failed to map device memory");
+    }
+    printBuffer(dataDst, width, height, "dst buffer post:");
+    std::memcpy(outPlane, dataDst, width * height * sizeof(int));
+    vkUnmapMemory(device, computeStagingMemorys[1]);
+
+    delete[] inPlane;
+    delete[] outPlane;
+
+    for (VkDeviceMemory& memory : computeMemorys) {
+        vkFreeMemory(device, memory, nullptr);
+    }
+    for (VkBuffer& buff : computeBuffers) {
+        vkDestroyBuffer(device, buff, nullptr);
+    }
+    for (VkDeviceMemory& memory : computeStagingMemorys) {
+        vkFreeMemory(device, memory, nullptr);
+    }
+    for (VkBuffer& buff : computeStagingBuffers) {
+        vkDestroyBuffer(device, buff, nullptr);
+    }
 }
 
 void VulkanPlayground::mainLoop() {
@@ -96,18 +209,26 @@ void VulkanPlayground::mainLoop() {
 }
 
 void VulkanPlayground::cleanup() {
+    vkDestroyDescriptorPool(device, computeDescriptorPool, nullptr);
+    vkFreeCommandBuffers(device, computeCommandPool, 1, &computeCommandBuffer);
+    vkFreeCommandBuffers(device, computeCommandPool, 1, &computeCommandBufferForTransfer);
+    vkDestroyCommandPool(device, computeCommandPool, nullptr);
+    vkDestroyPipeline(device, computePipeline, nullptr);
+    vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
+    vkDestroyDescriptorSetLayout(device, computeSetLayout, nullptr);
+
     vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
     vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
     vkDestroyFence(device, inFlightFence, nullptr);
 
-    vkDestroyCommandPool(device, commandPool, nullptr);
+    vkDestroyCommandPool(device, graphicsCommandPool, nullptr);
 
     for (auto framebuffer : swapChainFramebuffers) {
         vkDestroyFramebuffer(device, framebuffer, nullptr);
     }
 
     vkDestroyPipeline(device, graphicsPipeline, nullptr);
-    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+    vkDestroyPipelineLayout(device, graphicsPipelineLayout, nullptr);
     vkDestroyRenderPass(device, renderPass, nullptr);
 
     vkDestroyBuffer(device, vertexBuffer, nullptr);
@@ -425,8 +546,8 @@ void VulkanPlayground::createRenderPass() {
 }
 
 void VulkanPlayground::createGraphicsPipeline() {
-    auto vertShaderCode = readFile("shaders/shader.vert.spv");
-    auto fragShaderCode = readFile("shaders/shader.frag.spv");
+    auto vertShaderCode = readFile("../shaders/shader.vert.spv");
+    auto fragShaderCode = readFile("../shaders/shader.frag.spv");
 
     VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
     VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -508,7 +629,7 @@ void VulkanPlayground::createGraphicsPipeline() {
     pipelineLayoutInfo.setLayoutCount = 0;
     pipelineLayoutInfo.pushConstantRangeCount = 0;
 
-    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &graphicsPipelineLayout) != VK_SUCCESS) {
         throw std::runtime_error("failed to create pipeline layout!");
     }
 
@@ -523,7 +644,7 @@ void VulkanPlayground::createGraphicsPipeline() {
     pipelineInfo.pMultisampleState = &multisampling;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = pipelineLayout;
+    pipelineInfo.layout = graphicsPipelineLayout;
     pipelineInfo.renderPass = renderPass;
     pipelineInfo.subpass = 0;
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
@@ -559,19 +680,6 @@ void VulkanPlayground::createFramebuffers() {
     }
 }
 
-void VulkanPlayground::createCommandPool() {
-    QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
-
-    VkCommandPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
-
-    if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create command pool!");
-    }
-}
-
 uint32_t VulkanPlayground::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
@@ -585,6 +693,29 @@ uint32_t VulkanPlayground::findMemoryType(uint32_t typeFilter, VkMemoryPropertyF
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
+void VulkanPlayground::createGraphicsCommandPoolAndBuffer() {
+    QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
+
+    if (vkCreateCommandPool(device, &poolInfo, nullptr, &graphicsCommandPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create command pool!");
+    }
+
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool = graphicsCommandPool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+
+    if (vkAllocateCommandBuffers(device, &allocInfo, &graphicsCommandBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate command buffers!");
+    }
+}
+
 void VulkanPlayground::createVertexBuffer() {
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -596,36 +727,12 @@ void VulkanPlayground::createVertexBuffer() {
         throw std::runtime_error("failed to create vertex buffer!");
     }
 
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(device, vertexBuffer, &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &vertexBufferMemory) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate vertex buffer memory!");
-    }
-
-    vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+    allocateBufferMemoryAndBind(vertexBuffer, vertexBufferMemory, static_cast<VkMemoryPropertyFlagBits>(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
 
     void* data;
     vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
     std::memcpy(data, vertices.data(), (size_t)bufferInfo.size);
     vkUnmapMemory(device, vertexBufferMemory);
-}
-
-void VulkanPlayground::createCommandBuffer() {
-    VkCommandBufferAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.commandPool = commandPool;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = 1;
-
-    if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate command buffers!");
-    }
 }
 
 void VulkanPlayground::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
@@ -701,8 +808,8 @@ void VulkanPlayground::drawFrame() {
     uint32_t imageIndex;
     vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
 
-    vkResetCommandBuffer(commandBuffer, /*VkCommandBufferResetFlagBits*/ 0);
-    recordCommandBuffer(commandBuffer, imageIndex);
+    vkResetCommandBuffer(graphicsCommandBuffer, /*VkCommandBufferResetFlagBits*/ 0);
+    recordCommandBuffer(graphicsCommandBuffer, imageIndex);
 
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -714,7 +821,7 @@ void VulkanPlayground::drawFrame() {
     submitInfo.pWaitDstStageMask = waitStages;
 
     submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
+    submitInfo.pCommandBuffers = &graphicsCommandBuffer;
 
     VkSemaphore signalSemaphores[] = { renderFinishedSemaphore };
     submitInfo.signalSemaphoreCount = 1;
@@ -737,6 +844,268 @@ void VulkanPlayground::drawFrame() {
     presentInfo.pImageIndices = &imageIndex;
 
     vkQueuePresentKHR(presentQueue, &presentInfo);
+}
+
+void VulkanPlayground::createComputeBindingsAndPipelineLayout() {
+    const uint32_t numBuffers = 2;
+    computeBuffers.resize(numBuffers);
+    computeStagingBuffers.resize(numBuffers);
+    std::vector<VkDescriptorSetLayoutBinding> layoutBindings;
+
+    for (uint32_t i = 0; i < numBuffers; i++) {
+        VkDescriptorSetLayoutBinding layoutBinding{};
+        layoutBinding.binding = i;
+        layoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        layoutBinding.descriptorCount = 1;
+        layoutBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        layoutBindings.push_back(layoutBinding);
+    }
+
+    VkDescriptorSetLayoutCreateInfo setLayoutCreateInfo{};
+    setLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    setLayoutCreateInfo.bindingCount = static_cast<uint32_t>(layoutBindings.size());
+    setLayoutCreateInfo.pBindings = layoutBindings.data();
+
+    if (vkCreateDescriptorSetLayout(device, &setLayoutCreateInfo, nullptr, &computeSetLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create descriptor set layout!");
+    }
+
+    VkPushConstantRange range = {};
+    range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    range.offset = 0;
+    range.size = sizeof(PushConstants);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
+    pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutCreateInfo.setLayoutCount = 1;
+    pipelineLayoutCreateInfo.pSetLayouts = &computeSetLayout;
+    pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
+    pipelineLayoutCreateInfo.pPushConstantRanges = &range;
+
+    if (vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, nullptr, &computePipelineLayout)) {
+        throw std::runtime_error("failed to create pipeline layout");
+    }
+}
+
+void VulkanPlayground::createComputePipeline() {
+
+    VkShaderModuleCreateInfo shaderModuleCreateInfo{};
+    shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+
+    auto shaderCode = readFile("../shaders/shader.comp.spv");
+    shaderModuleCreateInfo.pCode = reinterpret_cast<uint32_t*>(shaderCode.data());
+    shaderModuleCreateInfo.codeSize = shaderCode.size();
+
+    VkShaderModule shaderModule = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(device, &shaderModuleCreateInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create shader module");
+    }
+
+    VkSpecializationMapEntry ments[3];
+    ments[0].constantID = 0;
+    ments[0].offset = 0;
+    ments[0].size = 4;
+    ments[1].constantID = 1;
+    ments[1].offset = 4;
+    ments[1].size = 4;
+    ments[2].constantID = 2;
+    ments[2].offset = 8;
+    ments[2].size = 4;
+
+    int32_t ddddata[] = { workGroupSize, workGroupSize, 1 };
+
+    VkSpecializationInfo spinf;
+    spinf.mapEntryCount = 3;
+    spinf.pMapEntries = ments;
+    spinf.dataSize = 12;
+    spinf.pData = ddddata;
+
+    VkComputePipelineCreateInfo pipelineCreateInfo{};
+    pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineCreateInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipelineCreateInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pipelineCreateInfo.stage.module = shaderModule;
+    pipelineCreateInfo.stage.pSpecializationInfo = &spinf;
+
+    pipelineCreateInfo.stage.pName = "main";
+    pipelineCreateInfo.layout = computePipelineLayout;
+
+    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &computePipeline) != VK_SUCCESS) {// TODO
+        throw std::runtime_error("failed to create compute pipeline");
+    }
+    vkDestroyShaderModule(device, shaderModule, nullptr);
+}
+
+void VulkanPlayground::createComputeBuffers(uint64_t buffer_size) {
+    QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+
+    VkBufferCreateInfo bufferCreateInfo{};
+    bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferCreateInfo.size = sizeof(int) * buffer_size;
+    bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    bufferCreateInfo.queueFamilyIndexCount = 1;
+    bufferCreateInfo.pQueueFamilyIndices = &queueFamilyIndices.computeFamily.value();
+
+    bufferCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if (vkCreateBuffer(device, &bufferCreateInfo, nullptr, &computeStagingBuffers[0]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create buffers");
+    }
+
+    bufferCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (vkCreateBuffer(device, &bufferCreateInfo, nullptr, &computeStagingBuffers[1]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create buffers");
+    }
+
+    bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (vkCreateBuffer(device, &bufferCreateInfo, nullptr, &computeBuffers[0]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create buffers");
+    }
+
+    bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if (vkCreateBuffer(device, &bufferCreateInfo, nullptr, &computeBuffers[1]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create buffers");
+    }
+
+    computeStagingMemorys.resize(computeStagingBuffers.size());
+    computeMemorys.resize(computeBuffers.size());
+
+    allocateBufferMemoryAndBind(computeStagingBuffers[0], computeStagingMemorys[0], static_cast<VkMemoryPropertyFlagBits>(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT));
+    allocateBufferMemoryAndBind(computeStagingBuffers[1], computeStagingMemorys[1], static_cast<VkMemoryPropertyFlagBits>(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT));
+    allocateBufferMemoryAndBind(computeBuffers[0], computeMemorys[0], static_cast<VkMemoryPropertyFlagBits>(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
+    allocateBufferMemoryAndBind(computeBuffers[1], computeMemorys[1], static_cast<VkMemoryPropertyFlagBits>(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
+}
+
+void VulkanPlayground::allocateBufferMemoryAndBind(VkBuffer& buffer, VkDeviceMemory& memory, VkMemoryPropertyFlagBits flags) {
+    VkMemoryRequirements bufferMemoryRequirements;
+    vkGetBufferMemoryRequirements(device, buffer, &bufferMemoryRequirements);
+    VkDeviceSize requiredMemorySize = bufferMemoryRequirements.size;
+    uint32_t typeFilter = bufferMemoryRequirements.memoryTypeBits;
+
+    uint32_t memoryTypeIndex = findMemoryType(typeFilter, flags);
+
+    VkMemoryAllocateInfo allocateInfo = {};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocateInfo.allocationSize = requiredMemorySize;
+    allocateInfo.memoryTypeIndex = memoryTypeIndex;
+
+    if (vkAllocateMemory(device, &allocateInfo, nullptr, &memory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate buffer memory");
+    }
+
+    if (vkBindBufferMemory(device, buffer, memory, 0) != VK_SUCCESS) {
+        throw std::runtime_error("failed to bind buffer memory");
+    }
+}
+
+void VulkanPlayground::allocateComputeDescriptorSets() {
+    VkDescriptorPoolCreateInfo descriptorPoolCreateInfo{};
+    descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    descriptorPoolCreateInfo.maxSets = 1;
+
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = static_cast<uint32_t>(computeBuffers.size());
+
+    descriptorPoolCreateInfo.poolSizeCount = 1;
+    descriptorPoolCreateInfo.pPoolSizes = &poolSize;
+    if (vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, nullptr, &computeDescriptorPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create descriptor pool");
+    }
+
+    VkDescriptorSetAllocateInfo descriptorSetAllocateInfo{};
+    descriptorSetAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    descriptorSetAllocateInfo.descriptorPool = computeDescriptorPool;
+    descriptorSetAllocateInfo.descriptorSetCount = 1;
+    descriptorSetAllocateInfo.pSetLayouts = &computeSetLayout;
+
+    if (vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo, &computeDescriptorSet) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate descriptor sets");
+    }
+}
+
+void VulkanPlayground::bindComputeDescriptorSets() {
+    std::vector<VkWriteDescriptorSet> descriptorSetWrites(computeBuffers.size());
+    std::vector<VkDescriptorBufferInfo> bufferInfos(computeBuffers.size());
+
+    uint32_t i = 0;
+    for (const VkBuffer& buff : computeBuffers) {
+        VkWriteDescriptorSet writeDescriptorSet{};
+        writeDescriptorSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writeDescriptorSet.dstSet = computeDescriptorSet;
+        writeDescriptorSet.dstBinding = i;
+        writeDescriptorSet.dstArrayElement = 0;
+        writeDescriptorSet.descriptorCount = 1;
+        writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+
+        VkDescriptorBufferInfo buffInfo{};
+        buffInfo.buffer = buff;
+        buffInfo.offset = 0;
+        buffInfo.range = VK_WHOLE_SIZE;
+        bufferInfos[i] = buffInfo;
+
+        writeDescriptorSet.pBufferInfo = &bufferInfos[i];
+        descriptorSetWrites[i] = writeDescriptorSet;
+        i++;
+    }
+
+    vkUpdateDescriptorSets(device, descriptorSetWrites.size(), descriptorSetWrites.data(), 0, nullptr);
+}
+
+void VulkanPlayground::createComputeCommandPoolAndBuffer() {
+    QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+
+    VkCommandPoolCreateInfo commandPoolCreateInfo{};
+    commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    commandPoolCreateInfo.queueFamilyIndex = queueFamilyIndices.computeFamily.value();
+
+    if (vkCreateCommandPool(device, &commandPoolCreateInfo, nullptr, &computeCommandPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create command pool");
+    }
+
+    VkCommandBufferAllocateInfo commandBufferAllocateInfo = {};
+    commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    commandBufferAllocateInfo.commandPool = computeCommandPool;
+    commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    commandBufferAllocateInfo.commandBufferCount = 1;
+
+    if (vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, &computeCommandBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate command buffer");
+    }
+
+    if (vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, &computeCommandBufferForTransfer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate command buffer");
+    }
+}
+
+void VulkanPlayground::copyBuffer(VkBuffer& srcBuffer, VkBuffer& dstBuffer, VkDeviceSize size, VkCommandBuffer& commandBuffer) {
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+        throw std::runtime_error("failed to begin command buffer");
+    }
+
+    VkBufferCopy copyRegion{};
+    copyRegion.size = size;
+    vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to end command buffer");
+    }
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    VkResult submitResult = vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    if (submitResult != VK_SUCCESS) {
+        throw std::runtime_error("failed to submit command buffer to queue");
+    }
+    vkQueueWaitIdle(computeQueue);
+
+    vkResetCommandBuffer(commandBuffer, 0);
 }
 
 VkShaderModule VulkanPlayground::createShaderModule(const std::vector<char>& code) {

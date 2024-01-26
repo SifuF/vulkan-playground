@@ -3,22 +3,26 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-#include <iostream>
-#include <fstream>
-#include <stdexcept>
 #include <algorithm>
-#include <vector>
-#include <cstring>
-#include <cstdlib>
+#include <array>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iostream>
 #include <limits>
 #include <optional>
 #include <set>
+#include <sstream>
+#include <stdexcept>
+#include <vector>
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
+
+const int workGroupSize = 1;
 
 const std::vector<const char*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
@@ -63,23 +67,38 @@ private:
     void initVulkan();
     void mainLoop();
     void cleanup();
+    
+    // Vulkan common
     void createInstance();
-    void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo);
     void setupDebugMessenger();
     void createSurface();
     void pickPhysicalDevice();
     void createLogicalDevice();
+    
+    // Render
     void createSwapChain();
     void createImageViews();
     void createRenderPass();
     void createGraphicsPipeline();
     void createFramebuffers();
-    void createCommandPool();
+    void createGraphicsCommandPoolAndBuffer();
     void createVertexBuffer();
-    void createCommandBuffer();
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void createSyncObjects();
     void drawFrame();
+
+    // Compute
+    void createComputeBindingsAndPipelineLayout();
+    void createComputePipeline();
+    void createComputeBuffers(uint64_t buffer_size);
+    void allocateComputeDescriptorSets();
+    void bindComputeDescriptorSets();
+    void createComputeCommandPoolAndBuffer();
+    void copyBuffer(VkBuffer& srcBuffer, VkBuffer& dstBuffer, VkDeviceSize size, VkCommandBuffer& commandBuffer);
+    void compute();
+
+    // Helpers
+    void allocateBufferMemoryAndBind(VkBuffer& buffer, VkDeviceMemory& memory, VkMemoryPropertyFlagBits flags);
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
     VkShaderModule createShaderModule(const std::vector<char>& code);
     VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
@@ -91,43 +110,51 @@ private:
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
     std::vector<const char*> getRequiredExtensions();
     bool checkValidationLayerSupport();
+    void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo);
     VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger);
     void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator);
     static std::vector<char> readFile(const std::string& filename);
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
-    
-    GLFWwindow* window;
 
     VkInstance instance;
     VkDebugUtilsMessengerEXT debugMessenger;
-    VkSurfaceKHR surface;
-
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device;
-
+    
     VkQueue graphicsQueue;
     VkQueue presentQueue;
     VkQueue computeQueue;
 
+    GLFWwindow* window;
+
+    VkSurfaceKHR surface;
     VkSwapchainKHR swapChain;
     std::vector<VkImage> swapChainImages;
     VkFormat swapChainImageFormat;
     VkExtent2D swapChainExtent;
     std::vector<VkImageView> swapChainImageViews;
     std::vector<VkFramebuffer> swapChainFramebuffers;
-
     VkRenderPass renderPass;
-    VkPipelineLayout pipelineLayout;
+    VkPipelineLayout graphicsPipelineLayout;
     VkPipeline graphicsPipeline;
-
-    VkCommandPool commandPool;
-    VkCommandBuffer commandBuffer;
-
+    VkCommandPool graphicsCommandPool;
+    VkCommandBuffer graphicsCommandBuffer;
     VkBuffer vertexBuffer;
     VkDeviceMemory vertexBufferMemory;
-
     VkSemaphore imageAvailableSemaphore;
     VkSemaphore renderFinishedSemaphore;
     VkFence inFlightFence;
-};
 
+    std::vector<VkBuffer> computeBuffers;
+    std::vector<VkDeviceMemory> computeMemorys;
+    std::vector<VkBuffer> computeStagingBuffers;
+    std::vector<VkDeviceMemory> computeStagingMemorys;
+    VkDescriptorPool computeDescriptorPool;
+    VkDescriptorSet computeDescriptorSet;
+    VkDescriptorSetLayout computeSetLayout;
+    VkPipelineLayout computePipelineLayout;
+    VkPipeline computePipeline;
+    VkCommandPool computeCommandPool;
+    VkCommandBuffer computeCommandBuffer;
+    VkCommandBuffer computeCommandBufferForTransfer;
+};
