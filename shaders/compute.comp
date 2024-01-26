@@ -1,0 +1,302 @@
+#version 450
+
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_ARB_shading_language_420pack : enable
+
+//layout(local_size_x_id = 0, local_size_y_id = 1) in;
+//layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) buffer restrict readonly SrcImageBuffer {
+    uint samples[];
+} srcImageBuffer;
+
+layout(std430, set = 0, binding = 1) buffer restrict writeonly DstImageBuffer {
+    uint samples[];
+} dstImageBuffer;
+
+layout(push_constant) uniform consts {
+    int srcWidth;
+	int srcHeight;
+    int vertical;
+    int combined;
+};
+
+//ivec4 kernel = ivec4(0, 16384, 0, 0);
+ivec4 kernel = ivec4(0, 1, 0, 0);
+
+void main() {
+	const uint idx = gl_GlobalInvocationID.x;
+    const uint x = idx % srcWidth;
+    const uint y = idx / srcWidth;
+    const uint dstWidth = (vertical==1) ? srcWidth : 2 * srcWidth;
+    const uint dstHeight = (vertical==1) ? 2 * srcHeight : srcHeight;
+
+    if(combined==1) { // new combined mode
+        const uint dstWidth = 2 * srcWidth;
+        const uint dstHeight = 2 * srcHeight;
+        // pairs from 4th pixel to 4th from last pixel
+        if ( (y >= 3 && y < srcHeight) && (x >= 3 && x < srcWidth) ) {
+            const uint blk = kernel[0] * srcImageBuffer.samples[x + srcWidth * (y-3)]
+                + kernel[1] * srcImageBuffer.samples[x + srcWidth * (y-2)]
+                + kernel[2] * srcImageBuffer.samples[x + srcWidth * (y-1)]
+                + kernel[3] * srcImageBuffer.samples[x + srcWidth * y];
+
+            const uint blk_ = kernel[3] * srcImageBuffer.samples[x + srcWidth * (y-3)]
+                + kernel[2] * srcImageBuffer.samples[x + srcWidth * (y-2)]
+                + kernel[1] * srcImageBuffer.samples[x + srcWidth * (y-1)]
+                + kernel[0] * srcImageBuffer.samples[x + srcWidth * y];
+
+            const uint red = kernel[0] * srcImageBuffer.samples[x-1 + srcWidth * (y-3)]
+                + kernel[1] * srcImageBuffer.samples[x-1 + srcWidth * (y-2)]
+                + kernel[2] * srcImageBuffer.samples[x-1 + srcWidth * (y-1)]
+                + kernel[3] * srcImageBuffer.samples[x-1 + srcWidth * y];
+
+            const uint red_ = kernel[3] * srcImageBuffer.samples[x-1 + srcWidth * (y-3)]
+                + kernel[2] * srcImageBuffer.samples[x-1 + srcWidth * (y-2)]
+                + kernel[1] * srcImageBuffer.samples[x-1 + srcWidth * (y-1)]
+                + kernel[0] * srcImageBuffer.samples[x-1 + srcWidth * y];
+
+            const uint blu = kernel[0] * srcImageBuffer.samples[x-2 + srcWidth * (y-3)]
+                + kernel[1] * srcImageBuffer.samples[x-2 + srcWidth * (y-2)]
+                + kernel[2] * srcImageBuffer.samples[x-2 + srcWidth * (y-1)]
+                + kernel[3] * srcImageBuffer.samples[x-2 + srcWidth * y];
+
+            const uint blu_ = kernel[3] * srcImageBuffer.samples[x-2 + srcWidth * (y-3)]
+                + kernel[2] * srcImageBuffer.samples[x-2 + srcWidth * (y-2)]
+                + kernel[1] * srcImageBuffer.samples[x-2 + srcWidth * (y-1)]
+                + kernel[0] * srcImageBuffer.samples[x-2 + srcWidth * y];
+
+            const uint grn = kernel[0] * srcImageBuffer.samples[x-3 + srcWidth * (y-3)]
+                + kernel[1] * srcImageBuffer.samples[x-3 + srcWidth * (y-2)]
+                + kernel[2] * srcImageBuffer.samples[x-3 + srcWidth * (y-1)]
+                + kernel[3] * srcImageBuffer.samples[x-3 + srcWidth * y];
+
+            const uint grn_ = kernel[3] * srcImageBuffer.samples[x-3 + srcWidth * (y-3)]
+                + kernel[2] * srcImageBuffer.samples[x-3 + srcWidth * (y-2)]
+                + kernel[1] * srcImageBuffer.samples[x-3 + srcWidth * (y-1)]
+                + kernel[0] * srcImageBuffer.samples[x-3 + srcWidth * y];
+
+            const uint c = kernel[0] * grn + kernel[1] * blu + kernel[2] * red + kernel[3] * blk;
+            const uint d = kernel[3] * grn + kernel[2] * blu + kernel[1] * red + kernel[0] * blk;
+            const uint e = kernel[0] * grn_ + kernel[1] * blu_ + kernel[2] * red_ + kernel[3] * blk_;
+            const uint f = kernel[3] * grn_ + kernel[2] * blu_ + kernel[1] * red_ + kernel[0] * blk_;
+
+            dstImageBuffer.samples[2 * x - 3 + dstWidth * (2 * y - 3)] = c;
+            dstImageBuffer.samples[2 * x - 3 + dstWidth * (2 * y - 3) + 1] = d;
+            dstImageBuffer.samples[2 * x - 3 + 1 + dstWidth * (2 * y - 3 + 1) - 1] = e;
+            dstImageBuffer.samples[2 * x - 3 + 1 + dstWidth * (2 * y - 3 + 1)] = f;
+        
+        }
+        else {
+            if(x == 0) {
+                if( y==0 ) {
+                    // first
+                    const uint blk = kernel[3] * srcImageBuffer.samples[x]
+                        + kernel[2] * srcImageBuffer.samples[x]
+                        + kernel[1] * srcImageBuffer.samples[x]
+                        + kernel[0] * srcImageBuffer.samples[x + srcWidth];
+
+                    const uint red = kernel[3] * srcImageBuffer.samples[x + 1]
+                        + kernel[2] * srcImageBuffer.samples[x + 1]
+                        + kernel[1] * srcImageBuffer.samples[x + 1]
+                        + kernel[0] * srcImageBuffer.samples[x + 1 + srcWidth];
+
+                    dstImageBuffer.samples[x + dstWidth * (y)] = kernel[0] * red + kernel[1] * blk + kernel[2] * blk + kernel[3] * blk;
+
+                    // last
+                    const uint blk_ = kernel[0] * srcImageBuffer.samples[(srcHeight - 2) * srcWidth]
+                        + kernel[1] * srcImageBuffer.samples[(srcHeight - 1) * srcWidth]
+                        + kernel[2] * srcImageBuffer.samples[(srcHeight - 1) * srcWidth]
+                        + kernel[3] * srcImageBuffer.samples[(srcHeight - 1) * srcWidth];
+
+                    const uint red_ = kernel[0] * srcImageBuffer.samples[(srcHeight - 2) * srcWidth]
+                        + kernel[1] * srcImageBuffer.samples[(srcHeight - 1) * srcWidth]
+                        + kernel[2] * srcImageBuffer.samples[(srcHeight - 1) * srcWidth]
+                        + kernel[3] * srcImageBuffer.samples[(srcHeight - 1) * srcWidth];
+
+                    dstImageBuffer.samples[x + (dstHeight - 1) * dstWidth] = kernel[0] * red_ + kernel[1] * blk_ + kernel[2] * blk_ + kernel[3] * blk_;
+                }
+                if( y==1 ) {
+                    // 2nd and 3rd pixels
+                    const uint ul = kernel[0] * srcImageBuffer.samples[x]
+                        + kernel[1] * srcImageBuffer.samples[x]
+                        + kernel[2] * srcImageBuffer.samples[x + srcWidth]
+                        + kernel[3] * srcImageBuffer.samples[x + 2 * srcWidth];
+
+                    const uint ur = kernel[0] * srcImageBuffer.samples[x + 1]
+                        + kernel[1] * srcImageBuffer.samples[x + 1]
+                        + kernel[2] * srcImageBuffer.samples[x + 1 + srcWidth]
+                        + kernel[3] * srcImageBuffer.samples[x + 1 + 2 * srcWidth];
+
+                    const uint bl = kernel[3] * srcImageBuffer.samples[x]
+                        + kernel[2] * srcImageBuffer.samples[x]
+                        + kernel[1] * srcImageBuffer.samples[x + srcWidth]
+                        + kernel[0] * srcImageBuffer.samples[x + 2 * srcWidth];
+
+                    const uint br = kernel[3] * srcImageBuffer.samples[x + 1]
+                        + kernel[2] * srcImageBuffer.samples[x + 1]
+                        + kernel[1] * srcImageBuffer.samples[x + 1 + srcWidth]
+                        + kernel[0] * srcImageBuffer.samples[x + 1 + 2 * srcWidth];
+
+
+                    dstImageBuffer.samples[x + dstWidth * (y)] = kernel[0] * ur + kernel[1] * ul + kernel[2] * ul + kernel[3] * ul;
+                    dstImageBuffer.samples[x + dstWidth * (y + 1)] = kernel[0] * br + kernel[1] * bl + kernel[2] * bl + kernel[3] * bl;
+                }
+                if( y==2 ) {
+                    // use for second to last pixels
+                    const uint bl = kernel[0] * srcImageBuffer.samples[x + (srcHeight - 3) * srcWidth]
+                        + kernel[1] * srcImageBuffer.samples[x + (srcHeight - 2) * srcWidth]
+                        + kernel[2] * srcImageBuffer.samples[x + (srcHeight - 1) * srcWidth]
+                        + kernel[3] * srcImageBuffer.samples[x + (srcHeight - 1) * srcWidth];
+
+                    const uint br = kernel[0] * srcImageBuffer.samples[x + 1 + (srcHeight - 3) * srcWidth]
+                        + kernel[1] * srcImageBuffer.samples[x + 1 + (srcHeight - 2) * srcWidth]
+                        + kernel[2] * srcImageBuffer.samples[x + 1 + (srcHeight - 1) * srcWidth]
+                        + kernel[3] * srcImageBuffer.samples[x + 1 + (srcHeight - 1) * srcWidth];
+
+                    const uint ul = kernel[3] * srcImageBuffer.samples[x + (srcHeight - 3) * srcWidth]
+                        + kernel[2] * srcImageBuffer.samples[x + (srcHeight - 2) * srcWidth]
+                        + kernel[1] * srcImageBuffer.samples[x + (srcHeight - 1) * srcWidth]
+                        + kernel[0] * srcImageBuffer.samples[x + (srcHeight - 1) * srcWidth];
+
+                    const uint ur = kernel[3] * srcImageBuffer.samples[x + 1 + (srcHeight - 3) * srcWidth]
+                        + kernel[2] * srcImageBuffer.samples[x + 1 + (srcHeight - 2) * srcWidth]
+                        + kernel[1] * srcImageBuffer.samples[x + 1 + (srcHeight - 1) * srcWidth]
+                        + kernel[0] * srcImageBuffer.samples[x + 1 + (srcHeight - 1) * srcWidth];
+
+
+                    dstImageBuffer.samples[x + (dstHeight - 2) * dstWidth] = kernel[0] * ur + kernel[1] * ul + kernel[2] * ul + kernel[3] * ul;
+                    dstImageBuffer.samples[x + (dstHeight - 3) * dstWidth] = kernel[0] * br + kernel[1] * bl + kernel[2] * bl + kernel[3] * bl;
+                }
+                if( y>=3 ) {
+                    const uint ul = kernel[0] * srcImageBuffer.samples[x + (y - 3) * srcWidth]
+                        + kernel[1] * srcImageBuffer.samples[x + (y - 2) * srcWidth]
+                        + kernel[2] * srcImageBuffer.samples[x + (y - 1) * srcWidth]
+                        + kernel[3] * srcImageBuffer.samples[x + y * srcWidth];
+
+                    const uint ur = kernel[0] * srcImageBuffer.samples[x + 1 + (y - 3) * srcWidth]
+                        + kernel[1] * srcImageBuffer.samples[x + 1 + (y - 2) * srcWidth]
+                        + kernel[2] * srcImageBuffer.samples[x + 1 + (y - 1) * srcWidth]
+                        + kernel[3] * srcImageBuffer.samples[x + 1 + y * srcWidth];
+
+                    const uint bl = kernel[3] * srcImageBuffer.samples[x + (y - 3) * srcWidth]
+                        + kernel[2] * srcImageBuffer.samples[x + (y - 2) * srcWidth]
+                        + kernel[1] * srcImageBuffer.samples[x + (y - 1) * srcWidth]
+                        + kernel[0] * srcImageBuffer.samples[x + y * srcWidth];
+
+                    const uint br = kernel[3] * srcImageBuffer.samples[x + 1 + (y - 3) * srcWidth]
+                        + kernel[2] * srcImageBuffer.samples[x + 1 + (y - 2) * srcWidth]
+                        + kernel[1] * srcImageBuffer.samples[x + 1 + (y - 1) * srcWidth]
+                        + kernel[0] * srcImageBuffer.samples[x + 1 + y * srcWidth];
+
+                    dstImageBuffer.samples[x + dstWidth * (2 * y - 3)] = kernel[0] * ur + kernel[1] * ul + kernel[2] * ul + kernel[3] * ul;
+                    dstImageBuffer.samples[x + dstWidth * (2 * y - 3 + 1)] = kernel[0] * br + kernel[1] * bl + kernel[2] * bl + kernel[3] * bl;
+                }
+            }
+        }
+    } // end new combined mode
+    else { // normal mode
+        if(vertical==1) {
+            /////////// vertical upscale ////////////
+            // corners and edges
+            if(y==0) { // 1st pixel
+                dstImageBuffer.samples[x] = kernel[3] * srcImageBuffer.samples[x]
+                    + kernel[2] * srcImageBuffer.samples[x]
+                    + kernel[1] * srcImageBuffer.samples[x]
+                    + kernel[0] * srcImageBuffer.samples[x + srcWidth];
+            }
+            else if(y==1) { // 2nd and 3rd pixels
+                dstImageBuffer.samples[x + dstWidth] = kernel[0] * srcImageBuffer.samples[x]
+                    + kernel[1] * srcImageBuffer.samples[x]
+                    + kernel[2] * srcImageBuffer.samples[x + srcWidth]
+                    + kernel[3] * srcImageBuffer.samples[x + srcWidth * 2];
+
+                dstImageBuffer.samples[x + dstWidth * 2] = kernel[3] * srcImageBuffer.samples[x]
+                    + kernel[2] * srcImageBuffer.samples[x]
+                    + kernel[1] * srcImageBuffer.samples[x + srcWidth]
+                    + kernel[0] * srcImageBuffer.samples[x + srcWidth * 2];
+            }
+            else if(y == (srcHeight-3)) { // 3rd and 2nd to last pixels
+                dstImageBuffer.samples[x + dstWidth * (dstHeight - 3)] = kernel[0] * srcImageBuffer.samples[x + srcWidth * (srcHeight-3)]
+                    + kernel[1] * srcImageBuffer.samples[x + srcWidth * (srcHeight-2)]
+                    + kernel[2] * srcImageBuffer.samples[x + srcWidth * (srcHeight-1)]
+                    + kernel[3] * srcImageBuffer.samples[x + srcWidth * (srcHeight-1)];
+
+                dstImageBuffer.samples[x + dstWidth * (dstHeight - 2)] = kernel[3] * srcImageBuffer.samples[x + srcWidth * (srcHeight-3)]
+                    + kernel[2] * srcImageBuffer.samples[x + srcWidth * (srcHeight-2)]
+                    + kernel[1] * srcImageBuffer.samples[x + srcWidth * (srcHeight-1)]
+                    + kernel[0] * srcImageBuffer.samples[x + srcWidth * (srcHeight-1)];
+            }
+            else if(y == (srcHeight-1)) { // last pixel
+                dstImageBuffer.samples[x + dstWidth * (dstHeight - 1)] = kernel[0] * srcImageBuffer.samples[x + srcWidth * (srcHeight-2)]
+                    + kernel[1] * srcImageBuffer.samples[x + srcWidth * (srcHeight-1)]
+                    + kernel[2] * srcImageBuffer.samples[x + srcWidth * (srcHeight-1)]
+                    + kernel[3] * srcImageBuffer.samples[x + srcWidth * (srcHeight-1)];
+            }
+            
+            // pairs from 4th pixel to 4th from last pixel
+            if (y >= 3 && y < srcHeight) {
+                dstImageBuffer.samples[x + dstWidth * (2 * y - 3)] = kernel[0] * srcImageBuffer.samples[x + srcWidth * (y-3)]
+                + kernel[1] * srcImageBuffer.samples[x + srcWidth * (y-2)]
+                + kernel[2] * srcImageBuffer.samples[x + srcWidth * (y-1)]
+                + kernel[3] * srcImageBuffer.samples[x + srcWidth * y];
+
+                dstImageBuffer.samples[x + dstWidth * (2 * y - 3 + 1)] = kernel[3] * srcImageBuffer.samples[x + srcWidth * (y-3)]
+                + kernel[2] * srcImageBuffer.samples[x + srcWidth * (y-2)]
+                + kernel[1] * srcImageBuffer.samples[x + srcWidth * (y-1)]
+                + kernel[0] * srcImageBuffer.samples[x + srcWidth * y];
+            }
+        }
+        else {
+            /////////// horizontal upscale //////////
+            // corners and edges
+            if(x==0) { // 1st pixel
+                dstImageBuffer.samples[y * dstWidth] = kernel[3] * srcImageBuffer.samples[y * srcWidth]
+                    + kernel[2] * srcImageBuffer.samples[y * srcWidth]
+                    + kernel[1] * srcImageBuffer.samples[y * srcWidth]
+                    + kernel[0] * srcImageBuffer.samples[y * srcWidth + 1];
+            }
+            else if(x==1) { // 2nd and 3rd pixels
+                dstImageBuffer.samples[y * dstWidth + 1] = kernel[0] * srcImageBuffer.samples[y * srcWidth]
+                    + kernel[1] * srcImageBuffer.samples[y * srcWidth]
+                    + kernel[2] * srcImageBuffer.samples[y * srcWidth + 1]
+                    + kernel[3] * srcImageBuffer.samples[y * srcWidth + 2];
+
+                dstImageBuffer.samples[y * dstWidth + 2] = kernel[3] * srcImageBuffer.samples[y * srcWidth]
+                    + kernel[2] * srcImageBuffer.samples[y * srcWidth]
+                    + kernel[1] * srcImageBuffer.samples[y * srcWidth + 1]
+                    + kernel[0] * srcImageBuffer.samples[y * srcWidth + 2];
+            }
+            else if(x == (srcWidth-3)) { // 3rd and 2nd to last pixels
+                dstImageBuffer.samples[y * dstWidth + dstWidth - 3] = kernel[0] * srcImageBuffer.samples[y * srcWidth + srcWidth - 3]
+                    + kernel[1] * srcImageBuffer.samples[y * srcWidth + srcWidth - 2]
+                    + kernel[2] * srcImageBuffer.samples[y * srcWidth + srcWidth - 1]
+                    + kernel[3] * srcImageBuffer.samples[y * srcWidth + srcWidth - 1];
+
+                dstImageBuffer.samples[y * dstWidth + dstWidth - 2] = kernel[3] * srcImageBuffer.samples[y * srcWidth + srcWidth - 3]
+                    + kernel[2] * srcImageBuffer.samples[y * srcWidth + srcWidth - 2]
+                    + kernel[1] * srcImageBuffer.samples[y * srcWidth + srcWidth - 1]
+                    + kernel[0] * srcImageBuffer.samples[y * srcWidth + srcWidth - 1];
+            }
+            else if(x == (srcWidth-1)) { // last pixel
+                dstImageBuffer.samples[y * dstWidth + dstWidth - 1] = kernel[0] * srcImageBuffer.samples[y * srcWidth + srcWidth - 2]
+                    + kernel[1] * srcImageBuffer.samples[y * srcWidth + srcWidth - 1]
+                    + kernel[2] * srcImageBuffer.samples[y * srcWidth + srcWidth - 1]
+                    + kernel[3] * srcImageBuffer.samples[y * srcWidth + srcWidth - 1];
+            }
+            
+            // pairs from 4th pixel to 4th from last pixel
+            if (x >= 3 && x < srcWidth) {
+                dstImageBuffer.samples[2 * x - 3 + dstWidth * y] = kernel[0] * srcImageBuffer.samples[x - 3 + srcWidth * y]
+                + kernel[1] * srcImageBuffer.samples[x - 2 + srcWidth * y]
+                + kernel[2] * srcImageBuffer.samples[x - 1 + srcWidth * y]
+                + kernel[3] * srcImageBuffer.samples[x + srcWidth * y];
+
+                dstImageBuffer.samples[2 * x - 3 + 1 + dstWidth * y] = kernel[3] * srcImageBuffer.samples[x - 3 + srcWidth * y]
+                + kernel[2] * srcImageBuffer.samples[x - 2 + srcWidth * y]
+                + kernel[1] * srcImageBuffer.samples[x - 1 + srcWidth * y]
+                + kernel[0] * srcImageBuffer.samples[x + srcWidth * y];
+            }
+        }
+    } // end normal mode
+}
