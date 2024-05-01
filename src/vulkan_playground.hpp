@@ -90,6 +90,7 @@ private:
     void createTextureImageView();
     void createTextureSampler();
     void createVertexBuffer();
+    void createIndexBuffer();
     void createUniformBuffers();
     void createGraphicsDescriptorPool();
     void createGraphicsDescriptorSets();
@@ -105,6 +106,7 @@ private:
     void bindComputeDescriptorSets();
     void createComputeCommandPoolAndBuffer();
     void copyBuffer(VkBuffer& srcBuffer, VkBuffer& dstBuffer, VkDeviceSize size, VkCommandBuffer& commandBuffer);
+    void copyBuffer(VkBuffer& srcBuffer, VkBuffer& dstBuffer, VkDeviceSize size);
     void compute();
 
     // Helpers
@@ -178,6 +180,8 @@ private:
     std::vector<VkCommandBuffer> graphicsCommandBuffers;
     VkBuffer vertexBuffer;
     VkDeviceMemory vertexBufferMemory;
+    VkBuffer indexBuffer;
+    VkDeviceMemory indexBufferMemory;
 
     std::vector<VkBuffer> uniformBuffers;
     std::vector<VkDeviceMemory> uniformBuffersMemory;
