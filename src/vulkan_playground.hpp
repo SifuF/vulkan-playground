@@ -86,6 +86,7 @@ private:
     void createGraphicsPipeline();
     void createFramebuffers();
     void createGraphicsCommandPoolAndBuffer();
+    void createDepthResources();
     void createTextureImage();
     void createTextureImageView();
     void createTextureSampler();
@@ -136,6 +137,11 @@ private:
     static std::vector<char> readFile(const std::string& filename);
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+    void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory);
+    VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
+    VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features);
+    VkFormat findDepthFormat();
+    bool hasStencilComponent(VkFormat format);
 
     VkInstance instance;
     VkDebugUtilsMessengerEXT debugMessenger;
@@ -196,4 +202,8 @@ private:
     std::vector<VkSemaphore> imageAvailableSemaphores;
     std::vector<VkSemaphore> renderFinishedSemaphores;
     std::vector<VkFence> inFlightFences;
+
+    VkImage depthImage;
+    VkDeviceMemory depthImageMemory;
+    VkImageView depthImageView;
 };
