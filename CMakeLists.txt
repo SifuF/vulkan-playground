@@ -9,6 +9,8 @@ set(THIRD_PARTY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty)
 
 set(STB_SRC_DIR ${THIRD_PARTY_DIR}/stb_image)
 
+set(TOL_SRC_DIR ${THIRD_PARTY_DIR}/tiny_obj_loader)
+
 set(GLM_SRC_DIR ${THIRD_PARTY_DIR}/glm)
 
 set(GLFW_LIB_DIR ${THIRD_PARTY_DIR}/glfw/lib-vc2022)
@@ -21,6 +23,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${VULKAN_SRC_DIR}
         ${STB_SRC_DIR}
+        ${TOL_SRC_DIR}
         ${GLFW_SRC_DIR}
         ${GLM_SRC_DIR}
 )
